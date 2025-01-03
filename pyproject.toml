@@ -1,0 +1,24 @@
+[project]
+name = "protein_design_analysis"
+version = "0.0.1"
+description = "A toolkit to analyse complicated de novo protein designs in PyRosetta"
+authors = [
+    { name = "Matteo Ferla", email = "matteo.ferla@stats.ox.ac.uk" }
+]
+dependencies = [
+    "filelock",  # For file-based locking (like fcntl) with context manager support
+    "pebble",  # Multiprocessing with timeout and futures
+    "pyrosetta-help",  # Helper package for PyRosetta
+    "pyrosetta",  # PyRosetta... See installation instructions
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+classifiers = [
+    "Development Status :: 3 - Alpha",  # Project is in alpha stage
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",  # I so hate this default category...
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License"
+]
