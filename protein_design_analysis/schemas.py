@@ -6,6 +6,7 @@ The classes are defined here in schemas.py
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import numpy as np
 from typing import Union, TypeAlias
 
 CTypeIdx: TypeAlias = int  # 0-indexed
@@ -26,6 +27,8 @@ class _Settings:
     coordinate_constraint_weight: float = 1
     res_type_constraint_weight: float = 1
     initial_max_clashes: int = 3  #: a clash or two is fine for now
+    avoidance_cutoff: int = 0 # see ``tally_avoidance_by_bin``
+    avoidance_bins: np.array = ((0, 2.), (2., 3.), (2, 5.), (5., np.inf)) # see ``tally_avoidance_by_bin``
     tuned_folder_name: str = 'tuned_pdbs'
     relaxed_folder_name: str = 'relaxed_pdbs'
     unrelaxed_folder_name: str = 'unrelaxed_pdbs'

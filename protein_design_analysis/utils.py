@@ -46,7 +46,8 @@ def get_correct_ref(trb, template: pyrosetta.Pose) -> List[int]:
 
 
 def steal_frozen_sidechains(acceptor: pyrosetta.Pose,
-                 donor: pyrosetta.Pose, trb: Dict[str, Any],
+                 donor: pyrosetta.Pose,
+                 trb: Dict[str, Any],
                  move_acceptor: bool = False
                  ):
     """

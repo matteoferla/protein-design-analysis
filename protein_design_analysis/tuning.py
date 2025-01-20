@@ -71,21 +71,22 @@ class Tuner:
     settings = _Settings()
 
     def __init__(self,
-                 target_name: str,
-                 target_sequence: SeqType,
+                 design_name: str,
+                 design_sequence: SeqType,
                  hallucination_path: Union[str, Path],
                  original_path: Union[str, Path],
+                 particles_to_avoid: Optional[Union[str, np.array]]=None,
                  output_folder: Union[str, Path]=None,
                  chain_letters: Optional[str]=None,
                  start_seqs: Optional[List[str]]=None,
-                metadata: Optional[dict]=None,
+                 metadata: Optional[dict]=None,
                  ):
         """
         Instantiation does not do all the analysis, but sets up the object
         that can be called to do so later (within a try-except block say).
 
-        :param target_name: name of the hallucinated construct with a given sequence
-        :param target_sequence: ProteinMPNN sequence
+        :param design_name: name of the hallucinated construct with a given sequence
+        :param design_sequence: ProteinMPNN sequence
         :param hallucination_path: RFdiffusion output PDB 'hallucination'
         :param original_path: the template pdb used for the hallucination, the original pdb
         :param output_folder: the folder where the output files are written
@@ -94,10 +95,12 @@ class Tuner:
         :param start_seqs: the start sequences of the hallucination (start seq to figure out the chain breaks)
         """
         # ## Path independent attributes
-        self.target_name = str(target_name)               #: name of the RFdiffusion+ProteinMPNN design
-        self.target_sequence = str(target_sequence)       #: ProteinMPNN sequence
+        self.design_name = str(design_name)               #: name of the RFdiffusion+ProteinMPNN design
+        self.design_sequence = str(design_sequence)       #: ProteinMPNN sequence
         self.chain_letters = chain_letters
         self.start_seqs = start_seqs
+        self._initialized = False
+        self.particles_to_avoid: np.array = self.parse_particles_to_avoid(particles_to_avoid)
         # ----------------------------------------------
         # ## Paths
         self.paths = _Paths(hallucination=hallucination_path,
@@ -107,11 +110,11 @@ class Tuner:
         # when ``self.settings['*_folder_name']`` is set to None, the path is None and the file is not written.
         # files are checked in ``self.initialize``
         if self.settings.unrelaxed_folder_name:
-            self.paths.raw = self.paths.input_folder / self.settings.unrelaxed_folder_name / f'{self.target_name}.pdb.gz'
+            self.paths.raw = self.paths.input_folder / self.settings.unrelaxed_folder_name / f'{self.design_name}.pdb.gz'
         if self.settings.relaxed_folder_name:
-            self.paths.relaxed = self.paths.input_folder / self.settings.relaxed_folder_name / f'{self.target_name}.pdb.gz'
+            self.paths.relaxed = self.paths.input_folder / self.settings.relaxed_folder_name / f'{self.design_name}.pdb.gz'
         if self.settings.tuned_folder_name:
-            self.paths.tuned = self.paths.input_folder / self.settings.tuned_folder_name / f'{self.target_name}.pdb.gz'
+            self.paths.tuned = self.paths.input_folder / self.settings.tuned_folder_name / f'{self.design_name}.pdb.gz'
         else:
             warnings.warn('No tuned folder_name set, the tuned pdb will not be written... Is that what you want?')
         # path derived
@@ -119,20 +122,36 @@ class Tuner:
         # ----------------------------------------------
         # ## read by initialize
         self.trb: Dict[str, Any] = {}          #: the trb file w/ details about the hallucination
-        self.original = pyrosetta.Pose()       #: the template pdb used for the hallucination
+        self.original: Union[pyrosetta.Pose, None] = None   #: the template pdb used for the hallucination
         # ----------------------------------------------
         # ## Info
         # start info: this is the dict that gets returned by the instance call
         self.info = metadata.copy() if metadata else {}
-        self.info['name'] = target_name
+        self.info['name'] = design_name
         self.info['folder'] = self.paths.input_folder.as_posix()
-        self.info['target_sequence'] = target_sequence  # the seq wanted by proteinMPNN not the seq of the hallucination
+        self.info['design_sequence'] = design_sequence  # the seq wanted by proteinMPNN not the seq of the hallucination
         self.info['hallucination_name'] = self.paths.hallucination.stem
         self.info['start'] = time.time()
         self.info['status'] = 'ongoing'
         self.info['is_already_done'] = False
 
-    def __call__(self):
+    def parse_particles_to_avoid(self, particles_to_avoid) -> np.array:
+
+        if isinstance(particles_to_avoid, np.array):
+            return particles_to_avoid
+        elif isinstance(particles_to_avoid, list):
+            return list(particles_to_avoid)
+        elif particles_to_avoid is None:
+            return np.array([])
+        elif isinstance(particles_to_avoid, Path) and particles_to_avoid.suffix == '.npy':
+            return np.load(str(particles_to_avoid))
+        elif isinstance(particles_to_avoid, Path) and particles_to_avoid.suffix == '.pdb':
+            return self.extract_coordinates_from_pdbblock(particles_to_avoid.read_text())
+        else:
+            raise ValueError(f'Not coded for particles_to_avoid type ({type(particles_to_avoid)}')
+
+
+    def __call__(self) -> Dict[str, Any]:
         """
         Performs the analysis. See the following steps
 
@@ -144,13 +163,18 @@ class Tuner:
         try:
             self.initialize()
             hallucination: pyrosetta.Pose = self.read_hallucination()
+            self.appraise(hallucination, is_final=False)
+            self.custom_after_reading(hallucination)
             threaded: pyrosetta.Pose = self.thread(hallucination)
+            self.custom_after_threading(threaded)
             self.freeze(threaded, ref_index=1)
             self.squeze_gaps(threaded)
             relaxed: pyrosetta.Pose  = self.cartesian_relax(threaded) # technically it is the same object -> readability
             self.relax(relaxed)
             self.score(relaxed)
+            self.custom_after_relaxation(relaxed)
             tuned = self.tune(relaxed)
+            self.custom_after_tuning(tuned)
             self.info['status'] = 'complete'
         except self.settings.exception_to_catch as e:
             self.info['error_type'] = e.__class__.__name__
@@ -175,7 +199,7 @@ class Tuner:
         with self.paths.log.open('r') as f:
             logs = [json.loads(line) for line in f]
         for log in logs:
-            if log['name'] == self.target_name:
+            if log['name'] == self.design_name:
                 return log
         else:
             return None
@@ -188,34 +212,38 @@ class Tuner:
         4. Read the original and metadata
         """
         self.paths.check_folders()
+        init_pyrosetta()
         # ## Check if it's already done
         prior_info = self.get_log()
         if prior_info and not self.settings.override:
+            print(f'is_already_done: {prior_info} ')
             prior_info['is_already_done'] = True
             return prior_info
         self.write_log()
         # ## housekeeping
-        init_pyrosetta()
         # gz --> `dump_pdbgz`
         # ## read parent
         self.original: pyrosetta.Pose = pyrosetta.pose_from_file(self.paths.original.as_posix())
         # ## read metadata
         self.trb: Dict[str, Any] = pickle.load(self.paths.trb.open('rb'))
+        self._initialized = True
 
-    def read_hallucination(self) -> pyrosetta.Pose:
+    def read_hallucination(self, copy_sidechains=True) -> pyrosetta.Pose:
         """
         Reads the hallucination and fixes the chains (if set)
         """
+        if not self._initialized:
+            self.initialize()
         # ## read hallucination
         hallucination: pyrosetta.Pose = pyrosetta.pose_from_file(self.paths.hallucination.as_posix())
         self.fix_chains(hallucination)
-        # steal the frozen sidechain atoms from the parent
-        rmsd, tem2hal_idx1s = steal_frozen_sidechains(hallucination, self.original, self.trb, move_acceptor=False)
-        self.info['parent_hallucination_RMSD'] = rmsd
-        self.info['N_conserved_parent_hallucination_atoms'] = len(tem2hal_idx1s)
-        self.info['status'] = 'sidechain_fixed'
-        self.appraise(hallucination, is_final=False)
-        self.info['status'] = 'initial_checks_passed'
+        self.info['status'] = 'hallucination_read'
+        if copy_sidechains:
+            # steal the frozen sidechain atoms from the parent
+            rmsd, tem2hal_idx1s = steal_frozen_sidechains(hallucination, self.original, self.trb, move_acceptor=False)
+            self.info['parent_hallucination_RMSD'] = rmsd
+            self.info['N_conserved_parent_hallucination_atoms'] = len(tem2hal_idx1s)
+            self.info['status'] = 'sidechain_fixed'
         return hallucination
 
     def fix_chains(self, pose: pyrosetta.Pose):
@@ -225,10 +253,10 @@ class Tuner:
     def thread(self, hallucination: pyrosetta.Pose, fragment_sets=None, temp_folder='/tmp') -> pyrosetta.Pose:
         # the seq from proteinMPNN is only chain A
         # warning! using the full sequence slows down the threading from 16s to 1m 41s
-        full_target_seq = self.target_sequence + hallucination.sequence()[len(hallucination.chain_sequence(1)):]
+        full_target_seq = self.design_sequence + hallucination.sequence()[len(hallucination.chain_sequence(1)):]
         # ## Generate alignment file
-        aln_filename = f'{temp_folder}/{self.target_name}.grishin'
-        ph.write_grishin(target_name=self.target_name,
+        aln_filename = f'{temp_folder}/{self.design_name}.grishin'
+        ph.write_grishin(target_name=self.design_name,
                          target_sequence=full_target_seq,
                          template_name=self.hallucination_name,
                          template_sequence=hallucination.sequence(),
@@ -241,7 +269,7 @@ class Tuner:
         threadites: pru.vector1_bool
         threaded, threader, threadites = ph.thread(target_sequence=full_target_seq,
                                                    template_pose=hallucination,
-                                                   target_name=self.target_name,
+                                                   target_name=self.design_name,
                                                    template_name=self.hallucination_name,
                                                    align=aln,
                                                    fragment_sets=fragment_sets
@@ -323,6 +351,8 @@ class Tuner:
         """
         The carbonyl oxygens can be funky in hallucinated models.
         """
+        if int(self.settings.cartesian_relax_cycles) <= 0:
+            return pose
         relax = prp.relax.FastRelax(self.cart_scorefxn, self.settings.cartesian_relax_cycles)
         relax.dualspace(True)
         relax.minimize_bond_angles(True)
@@ -347,6 +377,8 @@ class Tuner:
         movemap.set_bb(v)
         movemap.set_chi(v)
         movemap.set_jump(False)
+        if int(self.settings.internal_relax_cycles) <= 0:
+            return pose
         relax = prp.relax.FastRelax(self.internal_scorefxn,self.settings.internal_relax_cycles)
         relax.set_movemap(movemap)
         relax.apply(pose)
@@ -380,6 +412,10 @@ class Tuner:
                                            trb=self.trb)
         self.info['N_clashes'] = n_clashing
         self.info['N_warning_stretches'] = n_warning_stretch
+        if self.particles_to_avoid:
+            bin_tally = self.tally_avoidance_by_bin(pose)
+            if bin_tally[0] > self.settings.avoidance_cutoff:
+                raise ValueError('Too much overlap with particles to avoid')
         if not is_final:
             return None
         pose2pdb = pose.pdb_info().pose2pdb
@@ -400,6 +436,19 @@ class Tuner:
         self.info['per_res_score'] = res_scores
         self.info['max_per_res_scores'] = max(res_scores)
         self.info['camel_seq'] = self.get_camelized_seq(pose)
+
+    def tally_avoidance_by_bin(self, pose: pyrosetta.Pose) -> List[int]:
+        """
+        This is all numpy based. The ``self.particles_to_avoid`` is a np.array
+        """
+        query: np.array = self.extract_coordinates_from_pose(pose)
+        # ``self.settings.avoidance_bins`` is by default ((0, 2.), (2., 3.), (2, 5.), (5., np.inf)))
+        distances = np.min(np.linalg.norm(query[:, np.newaxis] - self.particles_to_avoid, axis=2), axis=1)
+        bin_counts = [0] * len(self.settings.avoidance_bins)
+        for i, bin_range in enumerate(self.settings.avoidance_bins):
+            mask = (distances > bin_range[0]) & (distances <= bin_range[1])
+            bin_counts[i] = np.sum(mask)
+        return bin_counts
 
     def tune(self, pose: pyrosetta.Pose) -> pyrosetta.Pose:
         """
@@ -464,6 +513,37 @@ class Tuner:
         seq = pose.sequence()
         return ''.join([r if d else r.lower() for r, d in zip(seq, v)])
 
+    # --------------------------------------------------------
+    def custom_after_reading(self, pose):
+        """
+        Method called after reading and fixing hallucination
+        intended for subclasses
+        """
+        pass
+
+    def custom_after_threading(self, pose):
+        """
+        Method called after threading
+        intended for subclasses
+        """
+        pass
+
+    def custom_after_relaxation(self, pose):
+        """
+        Method called after minimisations
+        intended for subclasses
+        """
+        pass
+
+    def custom_after_tuning(self, pose):
+        """
+        Method called after tuning
+        intended for subclasses
+        """
+        pass
+
+    # --------------------------------------------------------
+
     @staticmethod
     def extract_coordinates_from_pdbblock(block: str, atom_names: Optional[Sequence[str]]=None) -> np.ndarray:
         coordinates = []
@@ -485,3 +565,8 @@ class Tuner:
         """
         return np.array([pose.xyz(prc.id.NamedAtomID(atom_in=n, rsd_in=idx1))
                          for n in atom_names for idx1 in range(1, pose.total_residue() + 1)])
+
+    @classmethod
+    def process_task(cls, **kwargs):
+        tuner = cls(**kwargs)
+        return tuner()

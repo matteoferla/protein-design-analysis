@@ -1,6 +1,6 @@
 [project]
 name = "protein_design_analysis"
-version = "0.0.1"
+version = "0.0.3"
 description = "A toolkit to analyse complicated de novo protein designs in PyRosetta"
 authors = [
     { name = "Matteo Ferla", email = "matteo.ferla@stats.ox.ac.uk" }
@@ -11,7 +11,7 @@ dependencies = [
     "pyrosetta-help",  # Helper package for PyRosetta
     "pyrosetta",  # PyRosetta... See installation instructions
 ]
-readme = "README.md"
+readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 

@@ -7,7 +7,7 @@ A toolkit to analyse complicated de novo protein designs in PyRosetta
 > If you are here because you are collaborating with me, please note that
 > currently only [crysalin project](https://github.com/matteoferla/crysalin) is public.
 
-## Still to do
+## Still to move over / refactor
 
 * functional proteinMPNN helper
 * Analyses
